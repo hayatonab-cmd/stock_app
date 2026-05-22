@@ -26,13 +26,14 @@ st.markdown("""
 st.title("Stock Scanner")
 
 # --- 2. データ取得関数 ---
-
 @st.cache_data(ttl=86400)
 def get_jpx_full_data():
     cache_path = "jpx_data.parquet"
     if os.path.exists(cache_path):
-        try: return pd.read_parquet(cache_path)
-        except: pass
+        try:
+            return pd.read_parquet(cache_path)
+        except:
+            pass
     url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
     headers = {'User-Agent': 'Mozilla/5.0'}
     req = urllib.request.Request(url, headers=headers)
@@ -40,8 +41,8 @@ def get_jpx_full_data():
         with urllib.request.urlopen(req) as response:
             f = io.BytesIO(response.read())
             df = pd.read_excel(f)
-            
-        # 👇 ここから安全な列抽出ロジック
+        
+        # JPXの新フォーマット（列名変更）に完全対応する安全ロジック
         available_cols = [c for c in ['コード', '銘柄名', '市場・商品区分', '市場・商品', '33業種区分'] if c in df.columns]
         df = df[available_cols].copy()
         if '市場・商品' in df.columns and '市場・商品区分' not in df.columns:
@@ -50,8 +51,22 @@ def get_jpx_full_data():
         df['コード'] = df['コード'].astype(str).str.strip()
         df.to_parquet(cache_path)
         return df
-    except: 
+    except:
         return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def get_market_indices():
+    indices = {"USD/JPY": "JPY=X", "日経平均": "^N225"}
+    data = {}
+    for name, ticker in indices.items():
+        try:
+            d = yf.download(ticker, period="5d", progress=False)
+            if not d.empty:
+                if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+                close = d['Close'].iloc[-1]
+                delta = close - d['Close'].iloc[-2]
+                data[name] = (round(float(close), 2), round(float(delta), 2))
+        except: data[name] = (0.0, 0.0)
     return data
 
 # --- 3. メインUI ---
@@ -69,8 +84,8 @@ with idx_c3:
 # --- 4. サイドバー ---
 st.sidebar.header("🔍 スクリーニング条件")
 
-# 戦略（スキャンモード）の選択肢を追加
-scan_mode = st.sidebar.radio("スキャンモード", ["Volume Spike (初動上昇)", "Inside Bar (はらみ足押し目)"])
+# 戦略（スキャンモード）の選択肢
+scan_mode = st.sidebar.radio("スキャンモード", ["Volume Spike (初動上昇)", "Inside Bar (25MA割れはらみ足押し目)"])
 
 st.sidebar.divider()
 
@@ -90,7 +105,7 @@ inv_min = st.sidebar.number_input("最小予算 (万円)", min_value=0, value=0,
 st.sidebar.divider()
 
 jpx_df = get_jpx_full_data()
-if not jpx_df.empty:
+if not jpx_df.empty and '市場・商品区分' in jpx_df.columns:
     target_keywords = ["プライム", "スタンダード", "グロース", "ETF・ETN"]
     ui_display_options = [
         m for m in sorted(jpx_df['市場・商品区分'].unique().tolist()) 
@@ -111,7 +126,6 @@ def analyze_stocks(tickers, scan_mode, config_dict, inv_min, inv_max):
     res = []
     if not tickers: return res
     
-    # 押し目判定で過去数ヶ月の移動平均線を見るため、期間を3ヶ月(3mo)に設定
     try:
         data = yf.download(tickers, period="3mo", progress=False, group_by='ticker', threads=False)
         for t in tickers:
@@ -144,21 +158,18 @@ def analyze_stocks(tickers, scan_mode, config_dict, inv_min, inv_max):
                             'シグナル': '初動急騰'
                         })
 
-                # 【2. はらみ足押し目モード（25MA割れVer.）】
+                # 【2. 25MA割れはらみ足押し目モード】
                 else:
                     ma_p = config_dict['ma_period']
                     if len(df) < ma_p + 3: continue
                     
-                    # 移動平均線を計算
                     ma = pd.Series(close).rolling(window=ma_p).mean().values
                     
-                    # 条件A: 移動平均線自体はまだ上向き（長期の上昇トレンドは崩れていない）
+                    # 条件A: 25MA自体は右肩上がり（長期上昇トレンド維持）
                     is_uptrend = ma[-1] > ma[-5]
-                    
-                    # 条件B: 【新変更】昨日か今日の安値が移動平均線を下回っている（しっかり押し目を作った）
+                    # 条件B: 昨日または今日の安値が25MA以下まで突っ込んでいる（しっかり調整した）
                     is_touching_or_below_ma = (low[-2] <= ma[-2]) or (low[-1] <= ma[-1])
-                    
-                    # 条件C: 本日の高値・安値が前日の範囲内に収まっている（売り圧力が止まった「はらみ足」）
+                    # 条件C: 本日のローソク足が前日の範囲内にスッポリ収まっている（はらみ足）
                     is_inside_bar = (high[-1] <= high[-2]) and (low[-1] >= low[-2])
                     
                     if is_uptrend and is_touching_or_below_ma and is_inside_bar:
@@ -170,7 +181,6 @@ def analyze_stocks(tickers, scan_mode, config_dict, inv_min, inv_max):
                             '売買代金(百万)': int((p * vol[-1]) / 1000000),
                             'シグナル': '25MA割れはらみ'
                         })
-                    
             except: continue
     except: pass
     return res
@@ -201,7 +211,25 @@ if start_btn:
 # --- 7. 結果表示 ---
 if "res_df" in st.session_state and st.session_state.res_df is not None:
     st.success(f"✅ 完了: {st.session_state.elapsed_time} 秒 / ヒット: {len(st.session_state.res_df)} 銘柄")
-    selection = st.dataframe(st.session_state.res_df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
+    
+    # 表示用のデータフレームを作成し、ヤフーファイナンスのリンクを自動生成
+    display_df = st.session_state.res_df.copy()
+    display_df['詳細リンク'] = "https://finance.yahoo.co.jp/quote/" + display_df['コード'] + ".T"
+    
+    cols = ['コード', '銘柄名', '詳細リンク', '価格', '前日比', '投資額(万円)', '売買代金(百万)', 'シグナル']
+    cols = [c for c in cols if c in display_df.columns]
+    display_df = display_df[cols]
+
+    selection = st.dataframe(
+        display_df, 
+        use_container_width=True, 
+        hide_index=True, 
+        on_select="rerun", 
+        selection_mode="single-row",
+        column_config={
+            "詳細リンク": st.column_config.LinkColumn("詳細リンク", display_text="Yahoo!で開く 🔗")
+        }
+    )
 
     if selection.selection.rows:
         target_row = st.session_state.res_df.iloc[selection.selection.rows[0]]
@@ -213,11 +241,10 @@ if "res_df" in st.session_state and st.session_state.res_df is not None:
 
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
         
-        # 移動平均線（MA）を計算してチャートに追加
-        if scan_mode == "Inside Bar (はらみ足押し目)":
-            ma_p = config_dict['ma_period']
-            c_df['MA'] = c_df['Close'].rolling(window=ma_p).mean()
-            fig.add_trace(go.Scatter(x=c_df.index, y=c_df['MA'], name=f"{ma_p}日移動平均線", line=dict(color='#FF9F43', width=1.5)), row=1, col=1)
+        # チャートにも設定した移動平均線（25MA等）を重ねて描画
+        ma_p = config_dict['ma_period'] if scan_mode == "Inside Bar (25MA割れはらみ足押し目)" else 25
+        c_df['MA'] = c_df['Close'].rolling(window=ma_p).mean()
+        fig.add_trace(go.Scatter(x=c_df.index, y=c_df['MA'], name=f"{ma_p}日移動平均線", line=dict(color='#FF9F43', width=1.5)), row=1, col=1)
 
         fig.add_trace(go.Candlestick(x=c_df.index, open=c_df['Open'], high=c_df['High'], low=c_df['Low'], close=c_df['Close'], name="株価"), row=1, col=1)
        
