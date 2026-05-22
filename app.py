@@ -26,29 +26,6 @@ st.markdown("""
 st.title("Stock Scanner")
 
 # --- 2. データ取得関数 ---
-@st.cache_data(ttl=86400)
-def get_jpx_full_data():
-    cache_path = "jpx_data.parquet"
-    if os.path.exists(cache_path):
-        try: return pd.read_parquet(cache_path)
-        except: pass
-    url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req) as response:
-            f = io.BytesIO(response.read())
-            df = pd.read_excel(f)
-#  修正後（これに書き換えてください！）
-# 列名が「市場・商品区分」から「市場・商品」などに変わったため、存在する列だけを安全に抜き出す処理にします
-available_cols = [c for c in ['コード', '銘柄名', '市場・商品区分', '市場・商品', '33業種区分'] if c in df.columns]
-df = df[available_cols].copy()
-if '市場・商品' in df.columns and '市場・商品区分' not in df.columns:
-    df = df.rename(columns={'市場・商品': '市場・商品区分'})
-        df['コード'] = df['コード'].astype(str).str.strip()
-        df.to_parquet(cache_path)
-        return df
-    except: return pd.DataFrame()
 
 @st.cache_data(ttl=86400)
 def get_jpx_full_data():
