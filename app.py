@@ -39,7 +39,12 @@ def get_jpx_full_data():
         with urllib.request.urlopen(req) as response:
             f = io.BytesIO(response.read())
             df = pd.read_excel(f)
-        df = df[['コード', '銘柄名', '市場・商品区分', '33業種区分']].copy()
+#  修正後（これに書き換えてください！）
+# 列名が「市場・商品区分」から「市場・商品」などに変わったため、存在する列だけを安全に抜き出す処理にします
+available_cols = [c for c in ['コード', '銘柄名', '市場・商品区分', '市場・商品', '33業種区分'] if c in df.columns]
+df = df[available_cols].copy()
+if '市場・商品' in df.columns and '市場・商品区分' not in df.columns:
+    df = df.rename(columns={'市場・商品': '市場・商品区分'})
         df['コード'] = df['コード'].astype(str).str.strip()
         df.to_parquet(cache_path)
         return df
