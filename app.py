@@ -186,8 +186,12 @@ def analyze_stocks(tickers, scan_mode, config_dict, inv_min, inv_max):
     return res
 
 # --- 6. 実行ロジック ---
+#  これをつなげて追記してください！
 if start_btn:
     start_time = time.time()
+    # 毎回ボタンを押した時に、古いデータが残っていたら強制削除する
+    if os.path.exists("jpx_data.parquet"):
+        os.remove("jpx_data.parquet")
     target_df = jpx_df[jpx_df['市場・商品区分'].isin(selected_markets)].head(num_scan)
     all_tickers = [f"{c}.T" for c in target_df['コード']]
    
